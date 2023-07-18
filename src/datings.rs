@@ -15,8 +15,8 @@ use crate::{
     callbacks::{Callback, RateCode},
     db::Database,
     text,
-    types::PublicProfile,
-    Bot, EditProfile,
+    types::{PublicProfile, UserSettings},
+    Bot,
 };
 
 pub async fn send_profile(
@@ -198,9 +198,9 @@ pub async fn send_like(
             ApiError::BotBlocked | ApiError::UserDeactivated,
         ))) => {
             warn!("bot was blocked");
-            db.create_or_update_user(EditProfile {
+            db.create_or_update_user(UserSettings {
                 active: Some(false),
-                ..EditProfile::new(dating.partner_id)
+                ..UserSettings::with_id(dating.partner_id)
             })
             .await?;
             return Ok(());
@@ -243,9 +243,9 @@ pub async fn send_like(
             ApiError::BotBlocked | ApiError::UserDeactivated,
         )) => {
             warn!("bot was blocked");
-            db.create_or_update_user(EditProfile {
+            db.create_or_update_user(UserSettings {
                 active: Some(false),
-                ..EditProfile::new(dating.partner_id)
+                ..UserSettings::with_id(dating.partner_id)
             })
             .await?;
             return Ok(());

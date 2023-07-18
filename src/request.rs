@@ -9,37 +9,37 @@ use teloxide::{
 };
 
 use crate::{
-    cities, text,
+    text,
     types::{DatingPurpose, Subjects},
-    utils, Bot, EditProfile,
+    utils, Bot, StateData,
 };
 
 pub async fn set_location_filter(
     bot: &Bot,
     chat: &Chat,
-    p: &EditProfile,
+    data: &StateData,
 ) -> anyhow::Result<()> {
-    let id = p
+    let city = data
+        .s
         .city
+        .clone()
         .context("city must be set at this moment")?
-        .context("city must be set at this moment")?;
+        .get_city()
+        .context("city must be specified")?;
 
-    let subject =
-        cities::subject_by_id(id).context("subject not found")?.to_owned();
-    let city = cities::city_by_id(id).context("city not found")?.to_owned();
+    let county = (*city.county()).to_string();
+    let subject = (*city.subject()).to_string();
+    let city_name = (*city.city()).to_string();
 
-    let mut subject_city = vec![KeyboardButton::new(subject)];
-    if subject != city {
-        subject_city.push(KeyboardButton::new(city));
+    let mut subject_city = vec![KeyboardButton::new(subject.clone())];
+    if subject != city_name {
+        subject_city.push(KeyboardButton::new(city_name));
     };
 
     let keyboard = vec![
         vec![
             KeyboardButton::new("Вся Россия".to_owned()),
-            KeyboardButton::new(format!(
-                "{} ФО",
-                cities::county_by_id(id).context("county not found")?
-            )),
+            KeyboardButton::new(format!("{county} ФО",)),
         ],
         subject_city,
     ];
@@ -126,15 +126,14 @@ pub async fn set_grade(bot: &Bot, chat: &Chat) -> anyhow::Result<()> {
 pub async fn set_subjects(
     bot: &Bot,
     chat: &Chat,
-    p: &EditProfile,
+    data: &StateData,
 ) -> anyhow::Result<()> {
     bot.send_message(chat.id, text::EDIT_SUBJECTS)
         .reply_markup(utils::make_subjects_keyboard(
-            match p.subjects {
-                Some(s) => Subjects::from_bits(s)
-                    .context("subjects must be created")?,
-                None => Subjects::default(),
-            },
+            data.s
+                .subjects
+                .clone()
+                .map_or_else(Subjects::default, |s| s.into()),
             &utils::SubjectsKeyboardType::User,
         ))
         .await?;
@@ -144,14 +143,11 @@ pub async fn set_subjects(
 pub async fn set_dating_purpose(
     bot: &Bot,
     chat: &Chat,
-    p: &EditProfile,
+    data: &StateData,
 ) -> anyhow::Result<()> {
     bot.send_message(chat.id, text::REQUEST_SET_DATING_PURPOSE)
         .reply_markup(utils::make_dating_purpose_keyboard(
-            match p.dating_purpose {
-                Some(d) => DatingPurpose::try_from(d)?,
-                None => DatingPurpose::default(),
-            },
+            data.s.dating_purpose.map_or_else(DatingPurpose::default, |d| d),
         ))
         .await?;
     Ok(())
@@ -160,15 +156,14 @@ pub async fn set_dating_purpose(
 pub async fn set_subjects_filter(
     bot: &Bot,
     chat: &Chat,
-    p: &EditProfile,
+    data: &StateData,
 ) -> anyhow::Result<()> {
     bot.send_message(chat.id, text::EDIT_PARTNER_SUBJECTS)
         .reply_markup(utils::make_subjects_keyboard(
-            match p.subjects_filter {
-                Some(s) => Subjects::from_bits(s)
-                    .context("subjects filter must be created")?,
-                None => Subjects::default(),
-            },
+            data.s
+                .subjects_filter
+                .clone()
+                .map_or_else(Subjects::default, |s| s.into()),
             &utils::SubjectsKeyboardType::Partner,
         ))
         .await?;

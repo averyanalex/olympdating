@@ -2,7 +2,7 @@ use std::{mem, sync::Arc};
 
 use anyhow::{bail, ensure, Context};
 use db::Database;
-use entities::sea_orm_active_enums::{Gender, ImageKind, LocationFilter};
+use entities::sea_orm_active_enums::ImageKind;
 use teloxide::{
     // net::Download,
     prelude::*,
@@ -16,10 +16,10 @@ use tracing::instrument;
 
 use crate::{
     callbacks::{Callback, RateCode, UpdateBitflags},
-    cities::{self, City},
+    cities::{UserCity},
     db, text,
-    types::{DatingPurpose, Grade, GraduationYear, Subjects},
-    utils, Bot, EditProfile, MyDialogue, State,
+    types::{DatingPurpose, Grade, Subjects, LocationFilter},
+    utils, Bot, MyDialogue, State, StateData,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -184,79 +184,69 @@ async fn try_handle_message(
 
     use State::*;
     match state {
-        SetName(p) => {
+        SetName(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
             ensure!((3..=16).contains(&t.chars().count()), HandleError::Length);
-            p.name = Some(t.to_owned());
-            upd_print!(if p.create_new {
-                SetGender(mem::take(p))
+            data.s.name = Some(t.to_owned());
+            upd_print!(if data.create_new {
+                SetGender(mem::take(data))
             } else {
                 Start
             });
         }
-        SetGender(p) => {
+        SetGender(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
-            let gender = match t {
-                text::GENDER_MALE => Gender::Male,
-                text::GENDER_FEMALE => Gender::Female,
-                _ => bail!(HandleError::WrongText),
-            };
-            p.gender = Some(gender);
-            upd_print!(if p.create_new {
-                SetGenderFilter(mem::take(p))
+            let gender = t.parse()?;
+            data.s.gender = Some(gender);
+            upd_print!(if data.create_new {
+                SetGenderFilter(mem::take(data))
             } else {
                 Start
             });
         }
-        SetGenderFilter(p) => {
+        SetGenderFilter(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
-            let gender = match t {
-                text::GENDER_FILTER_MALE => Some(Gender::Male),
-                text::GENDER_FILTER_FEMALE => Some(Gender::Female),
-                text::GENDER_FILTER_ANY => None,
-                _ => bail!(HandleError::WrongText),
-            };
-            p.gender_filter = Some(gender);
-            upd_print!(if p.create_new {
-                SetGraduationYear(mem::take(p))
+            let gender_filter = t.parse()?;
+            data.s.gender_filter = Some(gender_filter);
+            upd_print!(if data.create_new {
+                SetGraduationYear(mem::take(data))
             } else {
                 Start
             });
         }
-        SetGraduationYear(p) => {
+        SetGraduationYear(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
             let grade = t.parse::<i8>().map_err(|_| HandleError::WrongText)?;
             let grade =
                 Grade::try_from(grade).map_err(|_| HandleError::WrongText)?;
-            let graduation_year: GraduationYear = grade.into();
-            p.graduation_year = Some(graduation_year.into());
-            upd_print!(if p.create_new {
-                SetSubjects(mem::take(p))
+            data.s.grade = Some(grade);
+            upd_print!(if data.create_new {
+                SetSubjects(mem::take(data))
             } else {
                 Start
             });
         }
-        SetCity(p) => {
+        SetCity(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
 
             match t {
-                "Верно" if p.city.is_some() => {
-                    upd_print!(SetLocationFilter(mem::take(p)));
+                "Верно" if data.s.city.is_some() => {
+                    upd_print!(SetLocationFilter(mem::take(data)));
                 }
                 "Не указывать" => {
-                    p.city = Some(None);
-                    p.location_filter = Some(LocationFilter::SameCountry);
+                    data.s.city = Some(UserCity::unspecified());
+                    data.s.location_filter = Some(LocationFilter::Country);
 
                     send!(text::NO_CITY, remove);
-                    upd_print!(if p.create_new {
-                        SetAbout(mem::take(p))
+                    upd_print!(if data.create_new {
+                        SetAbout(mem::take(data))
                     } else {
                         Start
                     });
                 }
                 city => {
-                    if let Ok(city) = city.parse::<City>() {
-                        p.city = Some(city.into());
+                    if let Ok(city) = city.parse::<UserCity>() {
+                        data.s.city = Some(city.clone());
                         send!(
                             format!("Ваш город - {city}?"),
                             markup[[
@@ -273,75 +263,49 @@ async fn try_handle_message(
                 }
             }
         }
-        SetLocationFilter(p) => {
+        SetLocationFilter(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
-            // let filter = match t.chars().next() {
-            //     Some('1') => LocationFilter::SameCountry,
-            //     Some('2') => LocationFilter::SameCounty,
-            //     Some('3') => LocationFilter::SameSubject,
-            //     Some('4') => LocationFilter::SameCity,
-            //     _ => bail!(HandleError::WrongText),
-            // };
 
-            // TODO: fix this mostrosity
-            let filter = if t == "Вся Россия" {
-                LocationFilter::SameCountry
-            } else if cities::county_exists(
-                &t.chars()
-                    .rev()
-                    .skip(3)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<String>(),
-            ) {
-                LocationFilter::SameCounty
-            } else if cities::subject_exists(t) {
-                LocationFilter::SameSubject
-            } else if cities::city_exists(t) {
-                LocationFilter::SameCity
-            } else {
-                bail!(HandleError::WrongText);
-            };
+            let filter = t.parse()?;
 
-            p.location_filter = Some(filter);
-            upd_print!(if p.create_new {
-                SetAbout(mem::take(p))
+            data.s.location_filter = Some(filter);
+            upd_print!(if data.create_new {
+                SetAbout(mem::take(data))
             } else {
                 Start
             });
         }
-        SetAbout(p) => {
+        SetAbout(data) => {
             let t = t.ok_or(HandleError::NeedText)?;
             ensure!(
                 (1..=1024).contains(&t.chars().count()),
                 HandleError::Length
             );
-            p.about = Some(t.to_owned());
+            data.s.about = Some(t.to_owned());
             // FIXME: HACK: create user before SetPhotos
-            db.create_or_update_user(p.clone()).await?;
-            upd_print!(if p.create_new {
-                SetPhotos(mem::take(p))
+            db.create_or_update_user(data.s.clone()).await?;
+            upd_print!(if data.create_new {
+                SetPhotos(mem::take(data))
             } else {
                 Start
             });
         }
-        SetPhotos(p) => match t {
+        SetPhotos(data) => match t {
             Some("Без фото") => {
                 db.clean_images(chat.id.0).await?;
-                crate::datings::send_profile(bot, db, p.id).await?;
+                crate::datings::send_profile(bot, db, data.s.id).await?;
                 upd_print!(Start);
             }
             Some("Сохранить") => {
-                crate::datings::send_profile(bot, db, p.id).await?;
+                crate::datings::send_profile(bot, db, data.s.id).await?;
                 upd_print!(Start);
             }
             _ => {
                 // TODO: change type of photos_count to Option<u8>
                 // TODO: reset photos button
-                if p.photos_count == 0 {
+                if data.photos_count == 0 {
                     db.clean_images(msg.chat.id.0).await?;
-                } else if p.photos_count >= 10 {
+                } else if data.photos_count >= 10 {
                     send!(
                         "Невозможно добавить более 10 фото/видео",
                         markup[[KeyboardButton::new("Сохранить")]]
@@ -361,12 +325,12 @@ async fn try_handle_message(
                     bail!(HandleError::WrongText);
                 };
 
-                p.photos_count += 1;
+                data.photos_count += 1;
 
                 send!(
                     format!(
                         "Добавлено {}/10 фото/видео. Добавить ещё?",
-                        p.photos_count
+                        data.photos_count
                     ),
                     markup[[KeyboardButton::new("Сохранить")]]
                 );
@@ -435,17 +399,13 @@ async fn try_handle_callback(
     }
 
     match state {
-        SetSubjects(p) => {
+        SetSubjects(data) => {
             let Callback::SetSubjects(changed_subjects) = callback else {
                 bail!("wrong callback type")
             };
 
             // FIXME: store Subjects in EditProfile
-            let current_subjects = match p.subjects {
-                Some(s) => Subjects::from_bits(s)
-                    .context("subjects must be created")?,
-                None => Subjects::empty(),
-            };
+            let current_subjects = data.s.subjects.clone().map_or_else(Subjects::empty, |s| s.into());
 
             match changed_subjects {
                 UpdateBitflags::Continue => {
@@ -461,8 +421,8 @@ async fn try_handle_callback(
                     bot.edit_message_text(msg.chat.id, msg.id, subjects_str)
                         .await?;
 
-                    p.subjects = Some(current_subjects.bits());
-                    upd_print!(SetSubjectsFilter(mem::take(p)));
+                    data.s.subjects = Some(current_subjects.try_into()?);
+                    upd_print!(SetSubjectsFilter(mem::take(data)));
                 }
                 UpdateBitflags::Update(changed_subjects) => {
                     let new_subjects = current_subjects ^ changed_subjects;
@@ -474,21 +434,17 @@ async fn try_handle_callback(
                         ))
                         .await?;
 
-                    p.subjects = Some(new_subjects.bits());
+                    data.s.subjects = Some(new_subjects.into());
                 }
             }
         }
-        SetSubjectsFilter(p) => {
+        SetSubjectsFilter(data) => {
             let Callback::SetSubjectsFilter(changed_subjects_filter) = callback else {
                 bail!("wrong callback type")
             };
 
             // FIXME: store Subjects in EditProfile
-            let current_filter = match p.subjects_filter {
-                Some(s) => Subjects::from_bits(s)
-                    .context("subjects must be created")?,
-                None => Subjects::empty(),
-            };
+            let current_filter = data.s.subjects_filter.clone().map_or_else(Subjects::empty, |s| s.into());
 
             match changed_subjects_filter {
                 UpdateBitflags::Continue => {
@@ -509,8 +465,8 @@ async fn try_handle_callback(
                     )
                     .await?;
 
-                    p.subjects_filter = Some(current_filter.bits());
-                    upd_print!(SetSubjectsFilter(mem::take(p)));
+                    data.s.subjects_filter = Some(current_filter.into());
+                    upd_print!(SetSubjectsFilter(mem::take(data)));
                 }
                 UpdateBitflags::Update(changed_subjects_filter) => {
                     let new_subjects_filter =
@@ -523,20 +479,17 @@ async fn try_handle_callback(
                         ))
                         .await?;
 
-                    p.subjects_filter = Some(new_subjects_filter.bits());
+                    data.s.subjects_filter = Some(new_subjects_filter.into());
                 }
             }
         }
-        SetDatingPurpose(p) => {
+        SetDatingPurpose(data) => {
             let Callback::SetDatingPurpose(new_purpose) = callback else {
                 bail!("wrong callback type")
             };
 
             // FIXME: store DatingPurpose in EditProfile
-            let current_purpose = match p.dating_purpose {
-                Some(s) => DatingPurpose::try_from(s)?,
-                None => DatingPurpose::empty(),
-            };
+            let current_purpose = data.s.dating_purpose.map_or_else(DatingPurpose::empty, |s| s);
 
             match new_purpose {
                 UpdateBitflags::Continue => {
@@ -553,9 +506,9 @@ async fn try_handle_callback(
                     )
                     .await?;
 
-                    p.dating_purpose = Some(current_purpose.bits());
-                    upd_print!(if p.create_new {
-                        SetCity(mem::take(p))
+                    data.s.dating_purpose = Some(current_purpose);
+                    upd_print!(if data.create_new {
+                        SetCity(mem::take(data))
                     } else {
                         Start
                     });
@@ -569,7 +522,7 @@ async fn try_handle_callback(
                         ))
                         .await?;
 
-                    p.dating_purpose = Some(new_purpose.bits());
+                    data.s.dating_purpose = Some(new_purpose);
                 }
             }
         }
@@ -580,7 +533,7 @@ async fn try_handle_callback(
             // FIXME: check if user exists
             let user =
                 db.get_user(msg.chat.id.0).await?.context("user not found")?;
-            let p = EditProfile::from_model(user); // FIXME: why?
+            let p = StateData::with_settings(user.try_into()?);
 
             remove_buttons!();
             let state = match data {

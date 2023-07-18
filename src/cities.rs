@@ -6,26 +6,14 @@ use strsim::jaro_winkler;
 
 include!(concat!(env!("OUT_DIR"), "/citiesmap.rs"));
 
-#[derive(Copy, Clone)]
-pub struct City(Option<i32>);
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct UserCity(Option<City>);
 
-impl Display for City {
+impl Display for UserCity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Some(id) => {
-                let county =
-                    county_by_id(id).context("county not found").unwrap();
-                let subject =
-                    subject_by_id(id).context("subject not found").unwrap();
-                let city = city_by_id(id).context("city not found").unwrap();
-
-                if subject == city {
-                    f.write_fmt(format_args!("{county} ФО, {city}"))?;
-                } else {
-                    f.write_fmt(format_args!(
-                        "{county} ФО, {subject}, {city}"
-                    ))?;
-                }
+        match &self.0 {
+            Some(city) => {
+                f.write_fmt(format_args!("{city}"))?;
             }
             None => f.write_str("Город не указан")?,
         }
@@ -34,7 +22,57 @@ impl Display for City {
     }
 }
 
-impl FromStr for City {
+impl UserCity {
+    pub const fn get_city(self) -> Option<City> {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct City(i32);
+
+impl City {
+    pub fn city(&self) -> &'static &'static str {
+        city_by_id(self.0).expect("city not found")
+    }
+
+    pub fn subject(&self) -> &'static &'static str {
+        subject_by_id(self.0).expect("subject not found")
+    }
+
+    pub fn county(&self) -> &'static &'static str {
+        county_by_id(self.0).expect("county not found")
+    }
+}
+
+impl TryFrom<i32> for City {
+    type Error = anyhow::Error;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        county_by_id(value).context("county not found")?;
+        subject_by_id(value).context("subject not found")?;
+        city_by_id(value).context("city not found")?;
+
+        Ok(Self(value))
+    }
+}
+
+impl Display for City {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let county = self.county();
+        let subject = self.subject();
+        let city = self.city();
+
+        if subject == city {
+            f.write_fmt(format_args!("{county} ФО, {city}"))?;
+        } else {
+            f.write_fmt(format_args!("{county} ФО, {subject}, {city}"))?;
+        };
+        Ok(())
+    }
+}
+
+impl FromStr for UserCity {
     type Err = ();
 
     fn from_str(query: &str) -> Result<Self, Self::Err> {
@@ -50,22 +88,34 @@ impl FromStr for City {
             .next_back()
             .expect("there must be at least 1 city");
         if jaro_winkler(best_city.1, query) > 0.15 {
-            Ok(Self(Some(*best_city.0)))
+            Ok(Self(Some(City(*best_city.0))))
         } else {
             Err(())
         }
     }
 }
 
-impl From<Option<i32>> for City {
-    fn from(value: Option<i32>) -> Self {
-        Self(value)
+impl UserCity {
+    pub const fn unspecified() -> Self {
+        Self(None)
     }
 }
 
-impl From<City> for Option<i32> {
-    fn from(value: City) -> Self {
-        value.0
+impl TryFrom<Option<i32>> for UserCity {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Option<i32>) -> Result<Self, Self::Error> {
+        let city = match value {
+            Some(id) => Self(Some(id.try_into()?)),
+            None => Self(None),
+        };
+        Ok(city)
+    }
+}
+
+impl From<UserCity> for Option<i32> {
+    fn from(value: UserCity) -> Self {
+        value.0.map(|v| v.0)
     }
 }
 

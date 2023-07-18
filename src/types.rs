@@ -3,19 +3,80 @@ use std::{fmt::Display, str::FromStr};
 use anyhow::bail;
 use bitflags::bitflags;
 use chrono::Datelike;
-use entities::{sea_orm_active_enums::Gender, users};
+use entities::{
+    sea_orm_active_enums::{self, Gender},
+    users,
+};
 use itertools::Itertools;
+use sea_orm::ActiveValue;
 
-use crate::cities::City;
+use crate::cities::UserCity;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocationFilter {
+    City,
+    Subject,
+    County,
+    Country,
+}
+
+impl From<sea_orm_active_enums::LocationFilter> for LocationFilter {
+    fn from(value: sea_orm_active_enums::LocationFilter) -> Self {
+        match value {
+            sea_orm_active_enums::LocationFilter::SameCity => Self::City,
+            sea_orm_active_enums::LocationFilter::SameSubject => Self::Subject,
+            sea_orm_active_enums::LocationFilter::SameCounty => Self::County,
+            sea_orm_active_enums::LocationFilter::SameCountry => Self::Country,
+        }
+    }
+}
+
+impl From<LocationFilter> for sea_orm_active_enums::LocationFilter {
+    fn from(value: LocationFilter) -> Self {
+        match value {
+            LocationFilter::City => Self::SameCity,
+            LocationFilter::Subject => Self::SameSubject,
+            LocationFilter::County => Self::SameCounty,
+            LocationFilter::Country => Self::SameCountry,
+        }
+    }
+}
+
+impl FromStr for LocationFilter {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s == "Вся Россия" {
+            Self::Country
+        } else if crate::cities::county_exists(
+            &s.chars()
+                .rev()
+                .skip(3)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<String>(),
+        ) {
+            Self::County
+        } else if crate::cities::subject_exists(s) {
+            Self::Subject
+        } else if crate::cities::city_exists(s) {
+            Self::City
+        } else {
+            bail!("can't parse text into LocationFilter")
+        })
+    }
+}
 
 /// Gender of user
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UserGender {
     Female,
     Male,
 }
 
-impl From<&Gender> for UserGender {
-    fn from(value: &Gender) -> Self {
+impl From<Gender> for UserGender {
+    fn from(value: Gender) -> Self {
         match value {
             Gender::Female => Self::Female,
             Gender::Male => Self::Male,
@@ -33,13 +94,13 @@ impl From<UserGender> for Gender {
 }
 
 impl FromStr for UserGender {
-    type Err = ();
+    type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "Я парень" => Ok(Self::Male),
             "Я девушка" => Ok(Self::Female),
-            _ => Err(()),
+            _ => bail!("can't parse"),
         }
     }
 }
@@ -56,14 +117,15 @@ impl Display for UserGender {
 }
 
 /// Filter of partner's gender
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GenderFilter {
     Female,
     Male,
     All,
 }
 
-impl From<&Option<Gender>> for GenderFilter {
-    fn from(value: &Option<Gender>) -> Self {
+impl From<Option<Gender>> for GenderFilter {
+    fn from(value: Option<Gender>) -> Self {
         match value {
             Some(Gender::Female) => Self::Female,
             Some(Gender::Male) => Self::Male,
@@ -83,14 +145,14 @@ impl From<GenderFilter> for Option<Gender> {
 }
 
 impl FromStr for GenderFilter {
-    type Err = ();
+    type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "Девушку" => Ok(Self::Female),
             "Парня" => Ok(Self::Male),
             "Не важно" => Ok(Self::All),
-            _ => Err(()),
+            _ => bail!("can't parse"),
         }
     }
 }
@@ -121,6 +183,7 @@ impl From<GraduationYear> for i16 {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grade(i8);
 
 impl TryFrom<i8> for Grade {
@@ -186,7 +249,7 @@ pub struct PublicProfile {
     grade: Grade,
     subjects: UserSubjects,
     dating_purpose: DatingPurpose,
-    city: City,
+    city: UserCity,
     about: String,
 }
 
@@ -196,11 +259,11 @@ impl TryFrom<&users::Model> for PublicProfile {
     fn try_from(value: &users::Model) -> Result<Self, Self::Error> {
         Ok(Self {
             name: value.name.clone(),
-            gender: (&value.gender).into(),
-            grade: GraduationYear(value.graduation_year).into(),
+            gender: value.gender.clone().into(),
+            grade: GraduationYear::from(value.graduation_year).into(),
             subjects: value.subjects.try_into()?,
             dating_purpose: value.dating_purpose.try_into()?,
-            city: value.city.into(),
+            city: value.city.try_into()?,
             about: value.about.clone(),
         })
     }
@@ -344,6 +407,13 @@ impl TryFrom<i16> for DatingPurpose {
     }
 }
 
+impl From<DatingPurpose> for i16 {
+    fn from(value: DatingPurpose) -> Self {
+        value.0.bits()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserSubjects(Subjects);
 
 impl Display for UserSubjects {
@@ -367,5 +437,148 @@ impl TryFrom<i32> for UserSubjects {
         };
 
         Ok(Self(subjects))
+    }
+}
+
+impl From<UserSubjects> for i32 {
+    fn from(value: UserSubjects) -> Self {
+        value.0.bits()
+    }
+}
+
+impl From<UserSubjects> for Subjects {
+    fn from(value: UserSubjects) -> Self {
+        value.0
+    }
+}
+
+impl From<Subjects> for UserSubjects {
+    fn from(value: Subjects) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectsFilter(Subjects);
+
+impl Display for SubjectsFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.bits() == 0 {
+            f.write_str("Вам не важно, что ботает другой человек.")?;
+        } else {
+            f.write_fmt(format_args!(
+                "Предметы, хотя-бы один из которых должен ботать тот, кого вы \
+                 ищете: {}",
+                self.0
+            ))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl From<SubjectsFilter> for Subjects {
+    fn from(value: SubjectsFilter) -> Self {
+        value.0
+    }
+}
+
+impl From<Subjects> for SubjectsFilter {
+    fn from(value: Subjects) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<i32> for SubjectsFilter {
+    type Error = anyhow::Error;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let Some(subjects) = Subjects::from_bits(value) else {
+            bail!("can't construct subjects from bits")
+        };
+
+        Ok(Self(subjects))
+    }
+}
+
+impl From<SubjectsFilter> for i32 {
+    fn from(value: SubjectsFilter) -> Self {
+        value.0.bits()
+    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct UserSettings {
+    pub id: i64,
+    pub name: Option<String>,
+    pub gender: Option<UserGender>,
+    pub gender_filter: Option<GenderFilter>,
+    pub about: Option<String>,
+    pub active: Option<bool>,
+    pub grade: Option<Grade>,
+    pub grade_up_filter: Option<i16>,
+    pub grade_down_filter: Option<i16>,
+    pub subjects: Option<UserSubjects>,
+    pub subjects_filter: Option<SubjectsFilter>,
+    pub dating_purpose: Option<DatingPurpose>,
+    pub city: Option<UserCity>,
+    pub location_filter: Option<LocationFilter>,
+}
+
+impl TryFrom<users::Model> for UserSettings {
+    type Error = anyhow::Error;
+
+    fn try_from(value: users::Model) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id,
+            name: Some(value.name),
+            gender: Some(value.gender.into()),
+            gender_filter: Some(value.gender_filter.into()),
+            about: Some(value.about),
+            active: Some(value.active),
+            grade: Some(GraduationYear::from(value.graduation_year).into()),
+            grade_up_filter: Some(value.grade_up_filter),
+            grade_down_filter: Some(value.grade_down_filter),
+            subjects: Some(value.subjects.try_into()?),
+            subjects_filter: Some(value.subjects_filter.try_into()?),
+            dating_purpose: Some(value.dating_purpose.try_into()?),
+            city: Some(value.city.try_into()?),
+            location_filter: Some(value.location_filter.into()),
+        })
+    }
+}
+
+impl UserSettings {
+    pub fn with_id(id: i64) -> Self {
+        Self { id, ..Default::default() }
+    }
+
+    pub fn into_active_model(self) -> users::ActiveModel {
+        macro_rules! convert {
+            ($name:expr) => {
+                $name.map_or_else(
+                    || ActiveValue::NotSet,
+                    |v| ActiveValue::Set(v.into()),
+                )
+            };
+        }
+
+        users::ActiveModel {
+            id: ActiveValue::Set(self.id),
+            name: convert!(self.name),
+            gender: convert!(self.gender),
+            gender_filter: convert!(self.gender_filter),
+            about: convert!(self.about),
+            active: convert!(self.active),
+            last_activity: ActiveValue::NotSet,
+            graduation_year: convert!(self.grade.map(GraduationYear::from)),
+            grade_up_filter: convert!(self.grade_up_filter),
+            grade_down_filter: convert!(self.grade_down_filter),
+            subjects: convert!(self.subjects),
+            subjects_filter: convert!(self.subjects_filter),
+            dating_purpose: convert!(self.dating_purpose),
+            city: convert!(self.city),
+            location_filter: convert!(self.location_filter),
+        }
     }
 }

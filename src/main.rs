@@ -14,7 +14,6 @@
 use std::{str::FromStr, sync::Arc};
 
 use db::Database;
-use entities::sea_orm_active_enums::{Gender, LocationFilter};
 use sentry_tracing::EventFilter;
 use teloxide::{
     adaptors::{throttle::Limits, Throttle},
@@ -27,6 +26,7 @@ use teloxide::{
 };
 use tracing::*;
 use tracing_subscriber::prelude::*;
+use types::UserSettings;
 
 mod callbacks;
 mod cities;
@@ -154,79 +154,35 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-macro_rules! make_profile {
-    ($($element:ident: $ty:ty),* $(,)?) => {
-        #[derive(Clone, Default, Debug, PartialEq, Eq)]
-        pub struct EditProfile {
-            id: i64,
-            create_new: bool,
-            photos_count: u8,
-            $($element: Option<$ty>),*
-        }
-        impl EditProfile {
-            pub fn new(id: i64) -> Self {
-                Self {
-                    id,
-                    create_new: true,
-                    photos_count: 0,
-                    ..Default::default()
-                }
-            }
-
-            pub fn from_model(m: entities::users::Model) -> Self {
-                Self {
-                    id: m.id,
-                    create_new: false,
-                    photos_count: 0,
-                    $($element: Some(m.$element)),*
-                }
-            }
-
-            pub fn as_active_model(self) -> entities::users::ActiveModel {
-                use sea_orm::ActiveValue;
-                entities::users::ActiveModel {
-                    id: ActiveValue::Unchanged(self.id),
-                    last_activity: ActiveValue::NotSet,
-                    $($element: self.$element
-                        .map_or(ActiveValue::NotSet, |p| ActiveValue::Set(p))),*
-                }
-            }
-        }
-    };
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct StateData {
+    s: UserSettings,
+    create_new: bool,
+    photos_count: u8,
 }
 
-make_profile!(
-    name: String,
-    gender: Gender,
-    gender_filter: Option<Gender>,
-    about: String,
-    active: bool,
-    graduation_year: i16,
-    grade_up_filter: i16,
-    grade_down_filter: i16,
-    subjects: i32,
-    subjects_filter: i32,
-    dating_purpose: i16,
-    city: Option<i32>,
-    location_filter: LocationFilter,
-);
+impl StateData {
+    pub fn with_settings(s: UserSettings) -> Self {
+        Self { s, ..Default::default() }
+    }
+}
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub enum State {
     #[default]
     Start,
     // edit profile
-    SetName(EditProfile),
-    SetGender(EditProfile),
-    SetGenderFilter(EditProfile),
-    SetGraduationYear(EditProfile),
-    SetSubjects(EditProfile),
-    SetSubjectsFilter(EditProfile),
-    SetDatingPurpose(EditProfile),
-    SetCity(EditProfile),
-    SetLocationFilter(EditProfile),
-    SetAbout(EditProfile),
-    SetPhotos(EditProfile),
+    SetName(StateData),
+    SetGender(StateData),
+    SetGenderFilter(StateData),
+    SetGraduationYear(StateData),
+    SetSubjects(StateData),
+    SetSubjectsFilter(StateData),
+    SetDatingPurpose(StateData),
+    SetCity(StateData),
+    SetLocationFilter(StateData),
+    SetAbout(StateData),
+    SetPhotos(StateData),
     /// Waiting for the message for the like
     LikeWithMessage {
         dating: entities::datings::Model,
@@ -263,38 +219,6 @@ pub async fn start_profile_creation(
     let chat = &msg.chat;
     handle::make_macros!(bot, msg, state, chat);
 
-    // if !utils::check_user_subscribed_channel(bot, msg.chat.id.0).await? {
-    //     let keyboard = vec![vec![InlineKeyboardButton::callback(
-    //         "Я подписался на канал",
-    //         "✍",
-    //     )]];
-    //     let keyboard_markup = InlineKeyboardMarkup::new(keyboard);
-    //     bot.send_message(
-    //         msg.chat.id,
-    //         "Пожалуйста, подпишитесь на наш канал https://t.me/bvilove",
-    //     )
-    //     .reply_markup(keyboard_markup)
-    //     .await?;
-    //     return Ok(());
-    // };
-
-    // if utils::user_url(bot, msg.chat.id.0).await?.is_none() {
-    //     let keyboard = vec![vec![InlineKeyboardButton::callback(
-    //         "Я сделал юзернейм",
-    //         "✍",
-    //     )]];
-    //     let keyboard_markup = InlineKeyboardMarkup::new(keyboard);
-    //     bot.send_message(msg.chat.id, text::PLEASE_ALLOW_FORWARDING)
-    //         .reply_markup(keyboard_markup)
-    //         .await?;
-    // } else {
-    //     bot.send_message(msg.chat.id, text::PROFILE_CREATION_STARTED).await?;
-    //     let profile = EditProfile::new(msg.chat.id.0);
-    //     let state = State::SetName(profile.clone());
-    //     handle::print_current_state(&state, None, bot, &msg.chat).await?;
-    //     dialogue.update(state).await?;
-    // }
-
     remove_buttons!();
     if !utils::check_user_subscribed_channel(bot, msg.chat.id.0).await? {
         send!(
@@ -314,8 +238,8 @@ pub async fn start_profile_creation(
         );
     } else {
         send!(text::PROFILE_CREATION_STARTED);
-        let profile = EditProfile::new(msg.chat.id.0);
-        upd_print!(State::SetName(profile));
+        let settings = UserSettings::with_id(msg.chat.id.0);
+        upd_print!(State::SetName(StateData::with_settings(settings)));
     }
 
     Ok(())
@@ -385,9 +309,9 @@ async fn answer(
                     return Ok(());
                 }
 
-                db.create_or_update_user(EditProfile {
+                db.create_or_update_user(UserSettings {
                     active: Some(true),
-                    ..EditProfile::new(msg.chat.id.0)
+                    ..UserSettings::with_id(msg.chat.id.0)
                 })
                 .await?;
                 bot.send_message(msg.chat.id, text::PROFILE_ENABLED).await?;
@@ -399,9 +323,9 @@ async fn answer(
                     return Ok(());
                 }
 
-                db.create_or_update_user(EditProfile {
+                db.create_or_update_user(UserSettings {
                     active: Some(false),
-                    ..EditProfile::new(msg.chat.id.0)
+                    ..UserSettings::with_id(msg.chat.id.0)
                 })
                 .await?;
                 bot.send_message(msg.chat.id, text::PROFILE_DISABLED).await?;

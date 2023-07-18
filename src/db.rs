@@ -29,10 +29,10 @@ impl Database {
     #[instrument(level = "debug", skip(self))]
     pub async fn create_or_update_user(
         &self,
-        profile: crate::EditProfile,
+        settings: crate::UserSettings,
     ) -> Result<()> {
-        let id = profile.id;
-        let user = profile.as_active_model();
+        let id = settings.id;
+        let user = settings.into_active_model();
 
         if Users::find_by_id(id).one(&self.conn).await?.is_some() {
             Users::update(user).exec(&self.conn).await?;
