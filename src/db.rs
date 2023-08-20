@@ -164,7 +164,7 @@ impl Database {
             .filter(users::Column::Active.eq(true))
             // Only recommend active users
             .filter(users::Column::LastActivity.into_expr().gt(
-                Expr::current_timestamp().sub(Expr::cust("interval '14 days'")),
+                Expr::current_timestamp().sub(Expr::cust("interval '90 days'")),
             ))
             // Respect users's graduation delta preference
             .filter(users::Column::GraduationYear.between(
